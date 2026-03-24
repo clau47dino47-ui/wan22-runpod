@@ -14,7 +14,7 @@ logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s %(me
 log = logging.getLogger(__name__)
 
 API_KEY   = os.environ["API_KEY"]
-MODEL_ID  = os.environ.get("MODEL_ID", "Wan-AI/Wan2.2-I2V-A14B-480P")
+MODEL_ID  = os.environ.get("MODEL_ID", "Wan-AI/Wan2.2-I2V-A14B-Diffusers")
 S3_BUCKET = os.environ["AWS_S3_BUCKET"]
 S3_REGION = os.environ.get("AWS_REGION", "us-east-1")
 
@@ -22,7 +22,7 @@ RESOLUTION_MAP = {"480p": (832, 480), "720p": (1280, 720)}
 
 log.info(f"Loading {MODEL_ID} ...")
 t0 = time.time()
-pipe = WanImageToVideoPipeline.from_pretrained(MODEL_ID, torch_dtype=torch.float16)
+pipe = WanImageToVideoPipeline.from_pretrained(MODEL_ID, torch_dtype=torch.bfloat16)
 pipe.enable_model_cpu_offload()
 pipe.vae.enable_tiling()
 pipe.vae.enable_slicing()
@@ -105,4 +105,3 @@ def get_job(job_id: str, _=Depends(verify)):
 @app.get("/health")
 def health():
     return {"status": "ok", "queue": job_queue.qsize()}
-

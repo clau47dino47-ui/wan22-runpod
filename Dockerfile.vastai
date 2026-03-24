@@ -16,7 +16,7 @@ RUN pip install "numpy<2"
 RUN pip install torch==2.5.1 torchvision==0.20.1 --index-url https://download.pytorch.org/whl/cu121
 
 RUN pip install \
-    "diffusers>=0.33.1" \
+    "git+https://github.com/huggingface/diffusers" \
     "transformers>=4.40.0" \
     "accelerate>=0.30.0" \
     sentencepiece \
