@@ -105,3 +105,4 @@ def get_job(job_id: str, _=Depends(verify)):
 @app.get("/health")
 def health():
     return {"status": "ok", "queue": job_queue.qsize()}
+
