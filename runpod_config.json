@@ -1,0 +1,23 @@
+{
+  "name": "wan22-i2v",
+  "imageName": "ghcr.io/clau47dino47-ui/wan22-runpod:latest",
+  "gpuIds": "NVIDIA GeForce RTX 4090",
+  "gpuCount": 1,
+  "containerDiskInGb": 20,
+  "volumeInGb": 100,
+  "volumeMountPath": "/runpod-volume",
+  "minWorkers": 0,
+  "maxWorkers": 5,
+  "idleTimeout": 5,
+  "flashboot": true,
+  "env": [
+    { "key": "HF_HOME",           "value": "/runpod-volume/cache/huggingface" },
+    { "key": "HF_HUB_CACHE",      "value": "/runpod-volume/cache/huggingface/hub" },
+    { "key": "MODEL_ID",          "value": "Wan-AI/Wan2.2-I2V-A14B-480P" },
+    { "key": "R2_ENDPOINT_URL",   "value": "REPLACE_ME" },
+    { "key": "R2_BUCKET",         "value": "REPLACE_ME" },
+    { "key": "R2_ACCESS_KEY",     "value": "REPLACE_ME" },
+    { "key": "R2_SECRET_KEY",     "value": "REPLACE_ME" },
+    { "key": "PYTORCH_CUDA_ALLOC_CONF", "value": "max_split_size_mb:128" }
+  ]
+}
