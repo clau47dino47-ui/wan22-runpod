@@ -20,6 +20,7 @@ RUN pip install \
     "transformers>=4.40.0" \
     "accelerate>=0.30.0" \
     sentencepiece \
+    ftfy \
     "imageio[ffmpeg]" \
     opencv-python-headless \
     boto3 \
