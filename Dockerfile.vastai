@@ -11,7 +11,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 RUN python3.10 -m pip install --upgrade pip
 
-RUN pip install torch==2.1.2 torchvision==0.16.2 --index-url https://download.pytorch.org/whl/cu121
+RUN pip install "numpy<2"
+
+RUN pip install torch==2.4.1 torchvision==0.19.1 --index-url https://download.pytorch.org/whl/cu121
 
 RUN pip install \
     diffusers>=0.30.0 \
