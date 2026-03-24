@@ -23,7 +23,7 @@ RESOLUTION_MAP = {"480p": (832, 480), "720p": (1280, 720)}
 log.info(f"Loading {MODEL_ID} ...")
 t0 = time.time()
 pipe = WanImageToVideoPipeline.from_pretrained(MODEL_ID, torch_dtype=torch.bfloat16)
-pipe.enable_model_cpu_offload()
+pipe.enable_sequential_cpu_offload()
 pipe.vae.enable_tiling()
 pipe.vae.enable_slicing()
 log.info(f"Model loaded in {time.time()-t0:.1f}s")
