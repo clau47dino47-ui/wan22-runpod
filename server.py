@@ -20,6 +20,15 @@ S3_REGION = os.environ.get("AWS_REGION", "us-east-1")
 
 RESOLUTION_MAP = {"480p": (832, 480), "720p": (1280, 720)}
 
+def fit_to_resolution(orig_w: int, orig_h: int, max_pixels: int) -> tuple[int, int]:
+    """Scale to fit within max_pixels while preserving aspect ratio. Round to multiple of 32."""
+    ratio = orig_w / orig_h
+    h = int((max_pixels / ratio) ** 0.5)
+    w = int(h * ratio)
+    w = max(round(w / 32) * 32, 64)
+    h = max(round(h / 32) * 32, 64)
+    return w, h
+
 log.info(f"Loading {MODEL_ID} ...")
 t0 = time.time()
 pipe = WanImageToVideoPipeline.from_pretrained(MODEL_ID, torch_dtype=torch.bfloat16)
@@ -46,10 +55,12 @@ def worker():
         job_id, payload = job_queue.get()
         job_store[job_id]["status"] = "IN_PROGRESS"
         try:
-            width, height = RESOLUTION_MAP.get(payload.get("resolution", "480p"), (832, 480))
+            max_pixels = {"480p": 832 * 480, "720p": 1280 * 720}.get(payload.get("resolution", "480p"), 832 * 480)
             resp = requests.get(payload["image_url"], timeout=30)
             resp.raise_for_status()
-            image = Image.open(io.BytesIO(resp.content)).convert("RGB").resize((width, height))
+            image = Image.open(io.BytesIO(resp.content)).convert("RGB")
+            width, height = fit_to_resolution(image.width, image.height, max_pixels)
+            image = image.resize((width, height), Image.LANCZOS)
             with torch.inference_mode():
                 output = pipe(
                     image=image,
