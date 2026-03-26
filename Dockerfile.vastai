@@ -1,5 +1,5 @@
 # ── Stage 1: builder ──────────────────────────────────────────────────────────
-FROM nvidia/cuda:12.1.1-cudnn8-devel-ubuntu22.04 AS builder
+FROM nvidia/cuda:12.4.1-cudnn-devel-ubuntu22.04 AS builder
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
@@ -13,11 +13,11 @@ RUN python3.10 -m pip install --upgrade pip
 
 RUN pip install "numpy<2"
 
-RUN pip install torch==2.5.1 torchvision==0.20.1 --index-url https://download.pytorch.org/whl/cu121
+RUN pip install torch==2.6.0 torchvision==0.21.0 --index-url https://download.pytorch.org/whl/cu124
 
 RUN pip install \
     "git+https://github.com/huggingface/diffusers" \
-    "transformers>=4.40.0" \
+    "transformers>=4.49.0" \
     "accelerate>=0.30.0" \
     sentencepiece \
     ftfy \
@@ -26,16 +26,21 @@ RUN pip install \
     boto3 \
     fastapi \
     "uvicorn[standard]" \
-    pydantic
+    pydantic \
+    requests \
+    pillow
+
+# SageAttention for 3-5x DiT speedup
+RUN pip install sageattention
 
 # ── Stage 2: runtime ──────────────────────────────────────────────────────────
-FROM nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04
+FROM nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
     HF_HOME=/workspace/cache/huggingface \
     HF_HUB_CACHE=/workspace/cache/huggingface/hub \
-    PYTORCH_CUDA_ALLOC_CONF="max_split_size_mb:128"
+    PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3.10 python3-pip ffmpeg libgl1 \
