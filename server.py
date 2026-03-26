@@ -40,9 +40,8 @@ transformer = HunyuanVideoTransformer3DModel.from_pretrained(
 pipe = HunyuanVideoImageToVideoPipeline.from_pretrained(
     MODEL_ID, transformer=transformer, torch_dtype=torch.float16
 )
-pipe.enable_model_cpu_offload()
+pipe.to("cuda")
 pipe.vae.enable_tiling()
-pipe.vae.enable_slicing()
 log.info(f"Model loaded in {time.time()-t0:.1f}s")
 
 s3 = boto3.client("s3", region_name=S3_REGION)
