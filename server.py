@@ -75,7 +75,6 @@ def worker():
                 output = pipe(
                     image=image,
                     prompt=payload["prompt"],
-                    negative_prompt=NEGATIVE_PROMPT,
                     num_frames=int(payload.get("num_frames", 129)),
                     num_inference_steps=int(payload.get("steps", 30)),
                     guidance_scale=float(payload.get("guidance_scale", 6.0)),
