@@ -1,5 +1,5 @@
 """
-HunyuanVideo 1.5 I2V — FastAPI server for Vast.ai persistent GPU instance
+HunyuanVideo I2V — FastAPI server for Vast.ai A100 80GB
 """
 import os, io, uuid, time, threading, queue, logging, requests, tempfile
 import torch, boto3
@@ -17,11 +17,6 @@ API_KEY   = os.environ["API_KEY"]
 MODEL_ID  = os.environ.get("MODEL_ID", "hunyuanvideo-community/HunyuanVideo-I2V")
 S3_BUCKET = os.environ["AWS_S3_BUCKET"]
 S3_REGION = os.environ.get("AWS_REGION", "us-east-1")
-
-NEGATIVE_PROMPT = (
-    "worst quality, bad anatomy, deformed, extra fingers, fused fingers, "
-    "broken finger, extra limbs, distorted limbs, extra legs"
-)
 
 def fit_to_resolution(orig_w: int, orig_h: int, max_pixels: int) -> tuple[int, int]:
     """Scale to fit within max_pixels while preserving aspect ratio. Round to multiple of 16."""
@@ -75,7 +70,7 @@ def worker():
                     image=image,
                     prompt=payload["prompt"],
                     num_frames=int(payload.get("num_frames", 129)),
-                    num_inference_steps=int(payload.get("steps", 30)),
+                    num_inference_steps=int(payload.get("steps", 50)),
                     guidance_scale=float(payload.get("guidance_scale", 6.0)),
                     width=width,
                     height=height,
@@ -106,7 +101,7 @@ class JobRequest(BaseModel):
     image_url: str | None = None
     resolution: str = "720p"
     num_frames: int = 129
-    steps: int = 30
+    steps: int = 50
     guidance_scale: float = 6.0
 
 @app.post("/jobs")
