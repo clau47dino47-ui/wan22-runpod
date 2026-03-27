@@ -19,7 +19,7 @@ API_KEY   = os.environ.get("API_KEY", "")
 S3_BUCKET = os.environ["AWS_S3_BUCKET"]
 S3_REGION = os.environ.get("AWS_REGION", "us-east-1")
 _DB_URL   = os.environ.get("DATABASE_URL", os.environ.get("NEON_DATABASE_URL", ""))
-MODEL_ID  = os.environ.get("MODEL_ID", "alibaba-pai/Wan2.1-Fun-14B-Control")
+MODEL_ID  = os.environ.get("MODEL_ID", "alibaba-pai/Wan2.1-Fun-V1.1-14B-Control")
 
 def _clean_db_url(url: str) -> str:
     url = re.sub(r"channel_binding=[^&]*&?", "", url)
@@ -30,36 +30,65 @@ def _clean_db_url(url: str) -> str:
 DB_URL = _clean_db_url(_DB_URL) if _DB_URL else ""
 
 # ── Model loading ──────────────────────────────────────────────────────────────
-log.info(f"Loading {MODEL_ID} ...")
+log.info(f"Downloading {MODEL_ID} ...")
 t0 = time.time()
 
+import inspect
+from huggingface_hub import snapshot_download
+from omegaconf import OmegaConf
+from transformers import AutoTokenizer as HFAutoTokenizer
 from videox_fun.pipeline.pipeline_wan_fun_control import WanFunControlPipeline
+from videox_fun.models.wan_transformer3d import WanTransformer3DModel
+from videox_fun.models.wan_vae import AutoencoderKLWan
+from videox_fun.models.wan_text_encoder import WanT5EncoderModel
+from videox_fun.models.wan_image_encoder import CLIPModel
+from videox_fun.utils.fm_solvers import FlowDPMSolverMultistepScheduler
 
-pipe = WanFunControlPipeline.from_pretrained(
-    MODEL_ID,
+def _filter_kwargs(cls, kwargs):
+    sig = inspect.signature(cls.__init__)
+    valid = set(sig.parameters.keys()) - {"self", "cls"}
+    return {k: v for k, v in kwargs.items() if k in valid}
+
+CACHE_DIR   = "/workspace/model_cache"
+CONFIG_PATH = "/app/wan_civitai.yaml"
+
+model_path = snapshot_download(MODEL_ID, local_dir=os.path.join(CACHE_DIR, "model"))
+log.info(f"Model downloaded to {model_path} in {time.time()-t0:.1f}s")
+config = OmegaConf.load(CONFIG_PATH)
+
+transformer = WanTransformer3DModel.from_pretrained(
+    os.path.join(model_path, config["transformer_additional_kwargs"].get("transformer_subpath", "./")),
+    torch_dtype=torch.bfloat16,
+    transformer_additional_kwargs=OmegaConf.to_container(config["transformer_additional_kwargs"]),
+)
+vae = AutoencoderKLWan.from_pretrained(
+    os.path.join(model_path, config["vae_kwargs"].get("vae_subpath", "vae")),
+    additional_kwargs=OmegaConf.to_container(config["vae_kwargs"]),
+)
+tokenizer = HFAutoTokenizer.from_pretrained(
+    config["text_encoder_kwargs"].get("tokenizer_subpath", "google/umt5-xxl"),
+)
+text_encoder = WanT5EncoderModel.from_pretrained(
+    os.path.join(model_path, config["text_encoder_kwargs"].get("text_encoder_subpath", "text_encoder")),
+    additional_kwargs=OmegaConf.to_container(config["text_encoder_kwargs"]),
     torch_dtype=torch.bfloat16,
 )
+image_encoder = CLIPModel.from_pretrained(
+    os.path.join(model_path, config["image_encoder_kwargs"].get("image_encoder_subpath", "image_encoder")),
+)
+sched_kwargs = OmegaConf.to_container(config["scheduler_kwargs"])
+scheduler = FlowDPMSolverMultistepScheduler(**_filter_kwargs(FlowDPMSolverMultistepScheduler, sched_kwargs))
 
-# FP8 layerwise casting — essenziale per 14B su 24GB VRAM
-try:
-    pipe.enable_layerwise_casting(
-        storage_dtype=torch.float8_e4m3fn,
-        compute_dtype=torch.bfloat16,
-    )
-    log.info("FP8 layerwise casting enabled")
-except Exception as e:
-    log.info(f"FP8 not available: {e}")
-
+pipe = WanFunControlPipeline(
+    vae=vae,
+    text_encoder=text_encoder,
+    tokenizer=tokenizer,
+    transformer=transformer,
+    scheduler=scheduler,
+    image_encoder=image_encoder,
+)
 pipe.enable_model_cpu_offload()
-
-# TeaCache per speedup ~50%
-try:
-    pipe.transformer.enable_teacache(threshold=0.2)
-    log.info("TeaCache enabled (threshold=0.2)")
-except Exception as e:
-    log.info(f"TeaCache not available: {e}")
-
-log.info(f"Model loaded in {time.time()-t0:.1f}s")
+log.info(f"Model ready in {time.time()-t0:.1f}s")
 
 # ── DWPose ────────────────────────────────────────────────────────────────────
 from controlnet_aux import DWposeDetector
