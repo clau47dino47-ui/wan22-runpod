@@ -64,7 +64,7 @@ transformer = WanTransformer3DModel.from_pretrained(
 vae = AutoencoderKLWan.from_pretrained(
     os.path.join(model_path, config["vae_kwargs"].get("vae_subpath", "vae")),
     additional_kwargs=OmegaConf.to_container(config["vae_kwargs"]),
-)
+).to(torch.bfloat16)
 tokenizer = HFAutoTokenizer.from_pretrained(
     config["text_encoder_kwargs"].get("tokenizer_subpath", "google/umt5-xxl"),
 )
@@ -75,7 +75,7 @@ text_encoder = WanT5EncoderModel.from_pretrained(
 )
 image_encoder = CLIPModel.from_pretrained(
     os.path.join(model_path, config["image_encoder_kwargs"].get("image_encoder_subpath", "image_encoder")),
-)
+).to(torch.bfloat16)
 sched_kwargs = OmegaConf.to_container(config["scheduler_kwargs"])
 scheduler = FlowDPMSolverMultistepScheduler(**_filter_kwargs(FlowDPMSolverMultistepScheduler, sched_kwargs))
 
@@ -85,15 +85,15 @@ pipe = WanFunControlPipeline(
     tokenizer=tokenizer,
     transformer=transformer,
     scheduler=scheduler,
-    image_encoder=image_encoder,
+    clip_image_encoder=image_encoder,
 )
 pipe.enable_model_cpu_offload()
 log.info(f"Model ready in {time.time()-t0:.1f}s")
 
-# ── DWPose ────────────────────────────────────────────────────────────────────
-from controlnet_aux import DWposeDetector
-dwpose = DWposeDetector()
-log.info("DWPose detector loaded")
+# ── DWPose (rtmlib — no mmcv/mmpose/mmdet required) ──────────────────────────
+from rtmlib import Wholebody, draw_skeleton as rtmlib_draw_skeleton
+_wholebody = Wholebody(to_openpose=True, backend="onnxruntime", device="cpu")
+log.info("DWPose detector (rtmlib Wholebody) loaded")
 
 # ── S3 ────────────────────────────────────────────────────────────────────────
 s3 = boto3.client("s3", region_name=S3_REGION)
@@ -172,18 +172,14 @@ def extract_pose_frames(video_url: str, target_w: int, target_h: int) -> tuple[l
         ret, frame = cap.read()
         if not ret:
             break
-        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        pil_frame = Image.fromarray(frame_rgb).resize((target_w, target_h), Image.LANCZOS)
-        # DWPose restituisce immagine con scheletro disegnato + keypoints
-        pose_result = dwpose(pil_frame, output_type="np", include_hand=True, include_face=True)
-        if isinstance(pose_result, tuple):
-            pose_img, keypoints = pose_result
-        else:
-            pose_img = pose_result
-            keypoints = None
-        pose_frames.append(np.array(pose_img))
-        if keypoints is not None:
-            raw_keypoints.append(keypoints)
+        frame_resized = cv2.resize(frame, (target_w, target_h))
+        keypoints, scores = _wholebody(frame_resized)
+        # Draw skeleton on black background (BGR)
+        black = np.zeros_like(frame_resized)
+        pose_vis = rtmlib_draw_skeleton(black, keypoints, scores, openpose_skeleton=True)
+        pose_frames.append(pose_vis)
+        if keypoints is not None and len(keypoints) > 0:
+            raw_keypoints.append(keypoints[0])
 
     cap.release()
     os.unlink(tmp_path)
@@ -193,9 +189,10 @@ def extract_pose_frames(video_url: str, target_w: int, target_h: int) -> tuple[l
 
 def extract_ref_pose_from_image(image: Image.Image) -> np.ndarray | None:
     """Estrae keypoints DWPose dall'immagine sorgente per normalizzazione."""
-    result = dwpose(image, output_type="np", include_hand=True, include_face=True)
-    if isinstance(result, tuple) and result[1] is not None:
-        return result[1]
+    img_bgr = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
+    keypoints, scores = _wholebody(img_bgr)
+    if keypoints is not None and len(keypoints) > 0:
+        return keypoints[0]
     return None
 
 # ── Inference ─────────────────────────────────────────────────────────────────
@@ -238,8 +235,17 @@ def process_payload(payload: dict) -> dict:
     pose_video_url = upload_pose_video(pose_frames, job_id)
     log.info(f"Pose video uploaded: {pose_video_url}")
 
-    # 5. Prepara control tensor
-    control_frames_pil = [Image.fromarray(f) for f in pose_frames]
+    # 5. Converte pose frames in tensor (b,c,f,h,w) in [0,1] per la pipeline
+    import torchvision.transforms.functional as TF
+    _dtype = transformer.dtype   # bfloat16
+    _device = transformer.device  # cuda
+    frames_rgb = [cv2.cvtColor(f, cv2.COLOR_BGR2RGB) for f in pose_frames]
+    control_video_tensor = torch.stack(
+        [TF.to_tensor(Image.fromarray(f)) for f in frames_rgb]
+    ).unsqueeze(0).permute(0, 2, 1, 3, 4).to(dtype=_dtype, device=_device)  # (1,3,num_frames,H,W)
+
+    # start_image: (1,3,1,H,W) in [0,1]
+    start_image_tensor = TF.to_tensor(source_image).unsqueeze(0).unsqueeze(2).to(dtype=_dtype, device=_device)  # (1,3,1,H,W)
 
     # 6. Generazione video
     negative_prompt = payload.get("negative_prompt", (
@@ -249,14 +255,16 @@ def process_payload(payload: dict) -> dict:
         "手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走"
     ))
 
-    log.info(f"Generating video: {len(control_frames_pil)} frames, {width}x{height}")
+    num_frames = int(payload.get("num_frames", control_video_tensor.shape[2]))
+    log.info(f"Generating video: {num_frames} frames, {width}x{height}")
     with torch.inference_mode():
         output = pipe(
             prompt=payload["prompt"],
             negative_prompt=negative_prompt,
-            image=source_image,
-            control_video=control_frames_pil,
-            num_frames=int(payload.get("num_frames", len(control_frames_pil))),
+            start_image=start_image_tensor,
+            clip_image=source_image,
+            control_video=control_video_tensor,
+            num_frames=num_frames,
             num_inference_steps=int(payload.get("steps", 40)),
             guidance_scale=float(payload.get("guidance_scale", 6.0)),
             width=width,
@@ -320,7 +328,7 @@ def db_worker():
                         conn.commit()
                     log.info(f"Job {job['id']} completed → {result['result_url']}")
                 except Exception as e:
-                    log.error(f"Job {job['id']} failed: {e}")
+                    log.exception(f"Job {job['id']} failed: {e}")
                     with conn.cursor() as cur:
                         cur.execute(
                             "UPDATE video_jobs SET status='failed', error_message=%s WHERE id=%s",
