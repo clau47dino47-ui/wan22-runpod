@@ -81,17 +81,17 @@ def upload_video(local_path: str) -> str:
     )
 
 # ── Inference ─────────────────────────────────────────────────────────────────
-def _run_segment(image, prompt: str, payload: dict, width: int, height: int) -> list:
+def _run_segment(image, prompt: str, payload: dict, width: int, height: int, apply_blur: bool = False) -> list:
     """Run one pipeline segment. Returns list of PIL frames."""
     if not isinstance(image, Image.Image):
         arr = np.array(image) if not isinstance(image, np.ndarray) else image
         if arr.dtype != np.uint8:
             arr = (arr * 255).clip(0, 255).astype(np.uint8)
         image = Image.fromarray(arr)
-    blurred = image.filter(ImageFilter.GaussianBlur(radius=1.2))
+    input_image = image.filter(ImageFilter.GaussianBlur(radius=1.2)) if apply_blur else image
     with torch.inference_mode():
         output = pipe(
-            image=blurred,
+            image=input_image,
             prompt=prompt,
             negative_prompt=payload.get("negative_prompt", _NEGATIVE_PROMPT),
             num_frames=int(payload.get("frames_per_segment", 25)),
@@ -118,7 +118,7 @@ def process_payload(payload: dict) -> str:
     all_frames: list = []
     for i, prompt in enumerate(prompts):
         log.info(f"  Segment {i+1}/{len(prompts)}: {prompt[:80]}...")
-        frames = _run_segment(current_image, prompt, payload, width, height)
+        frames = _run_segment(current_image, prompt, payload, width, height, apply_blur=(i == 0))
         all_frames.extend(frames)
         current_image = frames[-1]  # last frame → input for next segment
 
