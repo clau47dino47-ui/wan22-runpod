@@ -4,7 +4,7 @@ Polls Neon PostgreSQL for pending jobs (DB-centric architecture)
 """
 import os, io, uuid, time, threading, logging, requests, tempfile, re
 import torch, boto3
-from PIL import Image
+from PIL import Image, ImageFilter
 from diffusers import WanImageToVideoPipeline
 from diffusers.utils import export_to_video
 from fastapi import FastAPI, HTTPException
@@ -52,7 +52,22 @@ try:
 except Exception:
     log.info("TeaCache not available")
 
+# flow_shift=3.0 for 480p (reduces noise density mismatch at low resolution)
+try:
+    pipe.scheduler = type(pipe.scheduler).from_config(pipe.scheduler.config, flow_shift=3.0)
+    log.info("flow_shift=3.0 set for 480p")
+except Exception as e:
+    log.info(f"flow_shift not applied: {e}")
+
 log.info(f"Model loaded in {time.time()-t0:.1f}s")
+
+# Default negative prompt (Chinese — matches model training distribution)
+_NEGATIVE_PROMPT = (
+    "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，"
+    "整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，"
+    "画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，"
+    "手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走"
+)
 
 # ── S3 ────────────────────────────────────────────────────────────────────────
 s3 = boto3.client("s3", region_name=S3_REGION)
@@ -79,13 +94,18 @@ def process_payload(payload: dict) -> str:
 
     image = image.resize((width, height), Image.LANCZOS)
 
+    # ALG workaround: slight blur reduces high-frequency image dominance,
+    # allowing the text prompt to steer generation more effectively
+    image = image.filter(ImageFilter.GaussianBlur(radius=1.2))
+
     with torch.inference_mode():
         output = pipe(
             image=image,
             prompt=payload["prompt"],
-            num_frames=int(payload.get("num_frames", 81)),
+            negative_prompt=payload.get("negative_prompt", _NEGATIVE_PROMPT),
+            num_frames=int(payload.get("num_frames", 121)),
             num_inference_steps=int(payload.get("steps", 40)),
-            guidance_scale=float(payload.get("guidance_scale", 6.5)),
+            guidance_scale=float(payload.get("guidance_scale", 5.0)),
             width=width,
             height=height,
             max_sequence_length=int(payload.get("max_sequence_length", 512)),
