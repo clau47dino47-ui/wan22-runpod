@@ -15,10 +15,10 @@ from psycopg2.extras import RealDictCursor
 logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
 
-API_KEY   = os.environ["API_KEY"]
+API_KEY   = os.environ.get("API_KEY", "")
 S3_BUCKET = os.environ["AWS_S3_BUCKET"]
 S3_REGION = os.environ.get("AWS_REGION", "us-east-1")
-_DB_URL   = os.environ.get("NEON_DATABASE_URL", "")
+_DB_URL   = os.environ.get("DATABASE_URL", os.environ.get("NEON_DATABASE_URL", ""))
 MODEL_ID  = os.environ.get("MODEL_ID", "alibaba-pai/Wan2.1-Fun-14B-Control")
 
 def _clean_db_url(url: str) -> str:
