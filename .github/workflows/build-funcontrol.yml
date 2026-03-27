@@ -1,0 +1,41 @@
+name: Build Fun-Control image
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'server_funcontrol.py'
+      - 'Dockerfile.funcontrol'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /opt/hostedtoolcache/CodeQL /usr/local/share/boost \
+                      "$AGENT_TOOLSDIRECTORY"
+          sudo docker image prune -af
+          df -h
+
+      - uses: actions/checkout@v4
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build & Push Fun-Control image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: Dockerfile.funcontrol
+          push: true
+          tags: ghcr.io/${{ github.repository }}:funcontrol

@@ -1,0 +1,64 @@
+# ── Stage 1: builder ──────────────────────────────────────────────────────────
+FROM nvcr.io/nvidia/cuda:12.4.1-cudnn-devel-ubuntu22.04 AS builder
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3.10 python3.10-dev python3-pip git curl ffmpeg \
+    libgl1 libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN python3.10 -m pip install --upgrade pip
+
+RUN pip install "numpy<2"
+
+RUN pip install torch==2.6.0 torchvision==0.21.0 --index-url https://download.pytorch.org/whl/cu124
+
+# VideoX-Fun (Wan2.1-Fun-Control pipeline)
+RUN pip install git+https://github.com/aigc-apps/VideoX-Fun.git
+
+# DWPose via controlnet_aux
+RUN pip install controlnet-aux
+
+RUN pip install \
+    "git+https://github.com/huggingface/diffusers" \
+    "transformers==4.48.3" \
+    "accelerate>=0.30.0" \
+    sentencepiece \
+    ftfy \
+    "imageio[ffmpeg]" \
+    opencv-python-headless \
+    boto3 \
+    psycopg2-binary \
+    fastapi \
+    "uvicorn[standard]" \
+    pydantic \
+    requests \
+    pillow
+
+# SageAttention for speedup
+RUN pip install sageattention
+
+# ── Stage 2: runtime ──────────────────────────────────────────────────────────
+FROM nvcr.io/nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    HF_HOME=/workspace/cache/huggingface \
+    HF_HUB_CACHE=/workspace/cache/huggingface/hub \
+    PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3.10 python3-pip ffmpeg libgl1 libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /usr/local/lib/python3.10 /usr/local/lib/python3.10
+COPY --from=builder /usr/local/bin /usr/local/bin
+
+WORKDIR /app
+COPY server_funcontrol.py .
+
+EXPOSE 3452
+CMD ["python3.10", "-m", "uvicorn", "server_funcontrol:app", "--host", "0.0.0.0", "--port", "3452"]
