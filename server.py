@@ -84,10 +84,11 @@ def process_payload(payload: dict) -> str:
             image=image,
             prompt=payload["prompt"],
             num_frames=int(payload.get("num_frames", 81)),
-            num_inference_steps=int(payload.get("steps", 30)),
-            guidance_scale=float(payload.get("guidance_scale", 5.0)),
+            num_inference_steps=int(payload.get("steps", 40)),
+            guidance_scale=float(payload.get("guidance_scale", 6.5)),
             width=width,
             height=height,
+            max_sequence_length=int(payload.get("max_sequence_length", 512)),
         )
 
     with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
