@@ -3,6 +3,7 @@ Wan 2.2 TI2V-5B — FastAPI server for Vast.ai RTX 4090
 Polls Neon PostgreSQL for pending jobs (DB-centric architecture)
 """
 import os, io, uuid, time, threading, logging, requests, tempfile, re
+import numpy as np
 import torch, boto3
 from PIL import Image, ImageFilter
 from diffusers import WanImageToVideoPipeline
@@ -83,7 +84,10 @@ def upload_video(local_path: str) -> str:
 def _run_segment(image, prompt: str, payload: dict, width: int, height: int) -> list:
     """Run one pipeline segment. Returns list of PIL frames."""
     if not isinstance(image, Image.Image):
-        image = Image.fromarray(image)
+        arr = np.array(image) if not isinstance(image, np.ndarray) else image
+        if arr.dtype != np.uint8:
+            arr = (arr * 255).clip(0, 255).astype(np.uint8)
+        image = Image.fromarray(arr)
     blurred = image.filter(ImageFilter.GaussianBlur(radius=1.2))
     with torch.inference_mode():
         output = pipe(
