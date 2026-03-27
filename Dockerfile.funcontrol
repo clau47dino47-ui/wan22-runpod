@@ -16,9 +16,9 @@ RUN pip install "numpy<2"
 
 RUN pip install torch==2.6.0 torchvision==0.21.0 --index-url https://download.pytorch.org/whl/cu124
 
-# VideoX-Fun (Wan2.1-Fun-Control pipeline) — clone and install non-editable
+# VideoX-Fun (Wan2.1-Fun-Control pipeline) — clone and copy package directly
 RUN git clone --depth 1 https://github.com/aigc-apps/VideoX-Fun.git /videox_fun_repo \
-    && pip install /videox_fun_repo --no-deps
+    && cp -r /videox_fun_repo/videox_fun /usr/local/lib/python3.10/dist-packages/videox_fun
 
 # DWPose via controlnet_aux
 RUN pip install controlnet-aux
