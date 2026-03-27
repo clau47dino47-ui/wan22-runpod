@@ -80,8 +80,10 @@ def upload_video(local_path: str) -> str:
     )
 
 # ── Inference ─────────────────────────────────────────────────────────────────
-def _run_segment(image: Image.Image, prompt: str, payload: dict, width: int, height: int) -> list:
+def _run_segment(image, prompt: str, payload: dict, width: int, height: int) -> list:
     """Run one pipeline segment. Returns list of PIL frames."""
+    if not isinstance(image, Image.Image):
+        image = Image.fromarray(image)
     blurred = image.filter(ImageFilter.GaussianBlur(radius=1.2))
     with torch.inference_mode():
         output = pipe(
