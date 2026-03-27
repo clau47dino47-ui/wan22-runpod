@@ -1,44 +1,60 @@
 """
-HunyuanVideo I2V — FastAPI server for Vast.ai A100 80GB
+Wan 2.2 TI2V-5B — FastAPI server for Vast.ai RTX 4090
+Polls Neon PostgreSQL for pending jobs (DB-centric architecture)
 """
-import os, io, uuid, time, threading, queue, logging, requests, tempfile
+import os, io, uuid, time, threading, logging, requests, tempfile, re
 import torch, boto3
 from PIL import Image
-from diffusers import HunyuanVideoImageToVideoPipeline, HunyuanVideoTransformer3DModel
+from diffusers import WanImageToVideoPipeline
 from diffusers.utils import export_to_video
-from fastapi import FastAPI, HTTPException, Depends
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from pydantic import BaseModel
+from fastapi import FastAPI, HTTPException
+import psycopg2
+from psycopg2.extras import RealDictCursor
 
 logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
 
 API_KEY   = os.environ["API_KEY"]
-MODEL_ID  = os.environ.get("MODEL_ID", "hunyuanvideo-community/HunyuanVideo-I2V")
+MODEL_ID  = os.environ.get("MODEL_ID", "Wan-AI/Wan2.2-TI2V-5B-Diffusers")
 S3_BUCKET = os.environ["AWS_S3_BUCKET"]
 S3_REGION = os.environ.get("AWS_REGION", "us-east-1")
+_DB_URL   = os.environ.get("NEON_DATABASE_URL", "")
 
-def fit_to_resolution(orig_w: int, orig_h: int, max_pixels: int) -> tuple[int, int]:
-    """Scale to fit within max_pixels while preserving aspect ratio. Round to multiple of 16."""
-    ratio = orig_w / orig_h
-    h = int((max_pixels / ratio) ** 0.5)
-    w = int(h * ratio)
-    w = max(round(w / 16) * 16, 64)
-    h = max(round(h / 16) * 16, 64)
-    return w, h
+# Neon DB URL: strip channel_binding (unsupported by psycopg2) and downgrade to sslmode=require
+def _clean_db_url(url: str) -> str:
+    url = re.sub(r"channel_binding=[^&]*&?", "", url)
+    url = url.replace("sslmode=verify-full", "sslmode=require")
+    url = url.rstrip("?&")
+    return url
 
+DB_URL = _clean_db_url(_DB_URL) if _DB_URL else ""
+
+# ── Model loading ──────────────────────────────────────────────────────────────
 log.info(f"Loading {MODEL_ID} ...")
 t0 = time.time()
-transformer = HunyuanVideoTransformer3DModel.from_pretrained(
-    MODEL_ID, subfolder="transformer", torch_dtype=torch.bfloat16
-)
-pipe = HunyuanVideoImageToVideoPipeline.from_pretrained(
-    MODEL_ID, transformer=transformer, torch_dtype=torch.float16
-)
-pipe.to("cuda")
+pipe = WanImageToVideoPipeline.from_pretrained(MODEL_ID, torch_dtype=torch.bfloat16)
+
+# FP8 layerwise casting to reduce peak VRAM on 24GB (RTX 4090)
+try:
+    pipe.enable_layerwise_casting(storage_dtype=torch.float8_e4m3fn, compute_dtype=torch.bfloat16)
+    log.info("FP8 layerwise casting enabled")
+except Exception:
+    log.info("FP8 not available, using bfloat16")
+
+pipe.enable_model_cpu_offload()
 pipe.vae.enable_tiling()
+pipe.vae.enable_slicing()
+
+# TeaCache: 50% speedup if supported by this diffusers build
+try:
+    pipe.transformer.enable_teacache(threshold=0.25)
+    log.info("TeaCache enabled (threshold=0.25)")
+except Exception:
+    log.info("TeaCache not available")
+
 log.info(f"Model loaded in {time.time()-t0:.1f}s")
 
+# ── S3 ────────────────────────────────────────────────────────────────────────
 s3 = boto3.client("s3", region_name=S3_REGION)
 
 def upload_video(local_path: str) -> str:
@@ -48,76 +64,113 @@ def upload_video(local_path: str) -> str:
         "get_object", Params={"Bucket": S3_BUCKET, "Key": key}, ExpiresIn=86400
     )
 
-# ── Job queue ─────────────────────────────────────────────────────────────────
-job_queue: queue.Queue = queue.Queue()
-job_store: dict[str, dict] = {}
+# ── Inference ─────────────────────────────────────────────────────────────────
+def process_payload(payload: dict) -> str:
+    resp = requests.get(payload["image_url"], timeout=30)
+    resp.raise_for_status()
+    image = Image.open(io.BytesIO(resp.content)).convert("RGB")
 
-def worker():
+    width  = int(payload.get("width",  832))
+    height = int(payload.get("height", 480))
+
+    # Wan 2.2 requires dimensions divisible by 32
+    width  = max(round(width  / 32) * 32, 64)
+    height = max(round(height / 32) * 32, 64)
+
+    image = image.resize((width, height), Image.LANCZOS)
+
+    with torch.inference_mode():
+        output = pipe(
+            image=image,
+            prompt=payload["prompt"],
+            num_frames=int(payload.get("num_frames", 81)),
+            num_inference_steps=int(payload.get("steps", 30)),
+            guidance_scale=float(payload.get("guidance_scale", 5.0)),
+            width=width,
+            height=height,
+        )
+
+    with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
+        tmp_path = tmp.name
+    export_to_video(output.frames[0], tmp_path, fps=24)
+    url = upload_video(tmp_path)
+    os.unlink(tmp_path)
+    return url
+
+# ── DB worker ─────────────────────────────────────────────────────────────────
+_last_job_time = time.time()
+_idle_shutdown_minutes = int(os.environ.get("IDLE_SHUTDOWN_MINUTES", "0"))
+
+def db_worker():
+    global _last_job_time
     while True:
-        job_id, payload = job_queue.get()
-        job_store[job_id]["status"] = "IN_PROGRESS"
+        if not DB_URL:
+            time.sleep(10)
+            continue
+        conn = None
         try:
-            max_pixels = {"480p": 854 * 480, "720p": 1280 * 720}.get(
-                payload.get("resolution", "720p"), 1280 * 720
-            )
-            resp = requests.get(payload["image_url"], timeout=30)
-            resp.raise_for_status()
-            image = Image.open(io.BytesIO(resp.content)).convert("RGB")
-            width, height = fit_to_resolution(image.width, image.height, max_pixels)
-            image = image.resize((width, height), Image.LANCZOS)
-            with torch.inference_mode():
-                output = pipe(
-                    image=image,
-                    prompt=payload["prompt"],
-                    num_frames=int(payload.get("num_frames", 129)),
-                    num_inference_steps=int(payload.get("steps", 50)),
-                    guidance_scale=float(payload.get("guidance_scale", 6.0)),
-                    width=width,
-                    height=height,
-                )
-            with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
-                tmp_path = tmp.name
-            export_to_video(output.frames[0], tmp_path, fps=24)
-            video_url = upload_video(tmp_path)
-            os.unlink(tmp_path)
-            job_store[job_id] = {"status": "COMPLETED", "video_url": video_url}
-            log.info(f"Job {job_id} completed")
-        except Exception as e:
-            log.error(f"Job {job_id} failed: {e}")
-            job_store[job_id] = {"status": "FAILED", "error": str(e)}
+            conn = psycopg2.connect(DB_URL, connect_timeout=10)
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute("""
+                    UPDATE video_jobs
+                       SET status = 'in_progress', started_at = NOW()
+                     WHERE id = (
+                           SELECT id FROM video_jobs
+                            WHERE status = 'pending'
+                            ORDER BY created_at ASC
+                            LIMIT 1
+                            FOR UPDATE SKIP LOCKED
+                     )
+                     RETURNING *
+                """)
+                job = cur.fetchone()
+                conn.commit()
 
-threading.Thread(target=worker, daemon=True).start()
+            if job:
+                _last_job_time = time.time()
+                log.info(f"Processing job {job['id']}")
+                try:
+                    result_url = process_payload(job["payload"])
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "UPDATE video_jobs SET status='completed', result_url=%s, completed_at=NOW() WHERE id=%s",
+                            (result_url, job["id"])
+                        )
+                        conn.commit()
+                    log.info(f"Job {job['id']} completed")
+                except Exception as e:
+                    log.error(f"Job {job['id']} failed: {e}")
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "UPDATE video_jobs SET status='failed', error_message=%s WHERE id=%s",
+                            (str(e), job["id"])
+                        )
+                        conn.commit()
+            else:
+                # Check idle shutdown
+                if _idle_shutdown_minutes > 0:
+                    idle = (time.time() - _last_job_time) / 60
+                    if idle >= _idle_shutdown_minutes:
+                        log.info(f"Idle for {idle:.1f}min, shutting down")
+                        os.system("vastai destroy instance $(cat /etc/vast_instance_id 2>/dev/null || echo '') &")
+                        time.sleep(5)
+                        os._exit(0)
+                time.sleep(5)
+        except Exception as e:
+            log.error(f"DB worker error: {e}")
+            time.sleep(15)
+        finally:
+            if conn:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+
+threading.Thread(target=db_worker, daemon=True).start()
 
 # ── FastAPI ───────────────────────────────────────────────────────────────────
 app = FastAPI()
-security = HTTPBearer()
-
-def verify(creds: HTTPAuthorizationCredentials = Depends(security)):
-    if creds.credentials != API_KEY:
-        raise HTTPException(status_code=401)
-
-class JobRequest(BaseModel):
-    prompt: str
-    image_url: str | None = None
-    resolution: str = "720p"
-    num_frames: int = 129
-    steps: int = 50
-    guidance_scale: float = 6.0
-
-@app.post("/jobs")
-def create_job(req: JobRequest, _=Depends(verify)):
-    job_id = str(uuid.uuid4())
-    job_store[job_id] = {"status": "IN_QUEUE"}
-    job_queue.put((job_id, req.model_dump()))
-    return {"job_id": job_id, "status": "IN_QUEUE"}
-
-@app.get("/jobs/{job_id}")
-def get_job(job_id: str, _=Depends(verify)):
-    job = job_store.get(job_id)
-    if not job:
-        raise HTTPException(status_code=404)
-    return job
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "queue": job_queue.qsize()}
+    return {"status": "ok", "model": MODEL_ID}
