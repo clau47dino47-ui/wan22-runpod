@@ -6,6 +6,7 @@ on:
     paths:
       - 'server.py'
       - 'Dockerfile.vastai'
+  workflow_dispatch:
 
 jobs:
   build:
