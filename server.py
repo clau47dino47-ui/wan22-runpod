@@ -80,40 +80,45 @@ def upload_video(local_path: str) -> str:
     )
 
 # ── Inference ─────────────────────────────────────────────────────────────────
-def process_payload(payload: dict) -> str:
-    resp = requests.get(payload["image_url"], timeout=30)
-    resp.raise_for_status()
-    image = Image.open(io.BytesIO(resp.content)).convert("RGB")
-
-    width  = int(payload.get("width",  832))
-    height = int(payload.get("height", 480))
-
-    # Wan 2.2 requires dimensions divisible by 32
-    width  = max(round(width  / 32) * 32, 64)
-    height = max(round(height / 32) * 32, 64)
-
-    image = image.resize((width, height), Image.LANCZOS)
-
-    # ALG workaround: slight blur reduces high-frequency image dominance,
-    # allowing the text prompt to steer generation more effectively
-    image = image.filter(ImageFilter.GaussianBlur(radius=1.2))
-
+def _run_segment(image: Image.Image, prompt: str, payload: dict, width: int, height: int) -> list:
+    """Run one pipeline segment. Returns list of PIL frames."""
+    blurred = image.filter(ImageFilter.GaussianBlur(radius=1.2))
     with torch.inference_mode():
         output = pipe(
-            image=image,
-            prompt=payload["prompt"],
+            image=blurred,
+            prompt=prompt,
             negative_prompt=payload.get("negative_prompt", _NEGATIVE_PROMPT),
-            num_frames=int(payload.get("num_frames", 121)),
+            num_frames=int(payload.get("frames_per_segment", 25)),
             num_inference_steps=int(payload.get("steps", 40)),
             guidance_scale=float(payload.get("guidance_scale", 5.0)),
             width=width,
             height=height,
             max_sequence_length=int(payload.get("max_sequence_length", 512)),
         )
+    return output.frames[0]  # list of PIL Images
+
+def process_payload(payload: dict) -> str:
+    resp = requests.get(payload["image_url"], timeout=30)
+    resp.raise_for_status()
+    current_image = Image.open(io.BytesIO(resp.content)).convert("RGB")
+
+    width  = max(round(int(payload.get("width",  832)) / 32) * 32, 64)
+    height = max(round(int(payload.get("height", 480)) / 32) * 32, 64)
+    current_image = current_image.resize((width, height), Image.LANCZOS)
+
+    # Support both chaining mode (prompts[]) and legacy single-prompt mode
+    prompts = payload.get("prompts") or [payload["prompt"]]
+
+    all_frames: list = []
+    for i, prompt in enumerate(prompts):
+        log.info(f"  Segment {i+1}/{len(prompts)}: {prompt[:80]}...")
+        frames = _run_segment(current_image, prompt, payload, width, height)
+        all_frames.extend(frames)
+        current_image = frames[-1]  # last frame → input for next segment
 
     with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
         tmp_path = tmp.name
-    export_to_video(output.frames[0], tmp_path, fps=24)
+    export_to_video(all_frames, tmp_path, fps=24)
     url = upload_video(tmp_path)
     os.unlink(tmp_path)
     return url
