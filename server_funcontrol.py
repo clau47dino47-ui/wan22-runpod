@@ -33,8 +33,7 @@ DB_URL = _clean_db_url(_DB_URL) if _DB_URL else ""
 log.info(f"Loading {MODEL_ID} ...")
 t0 = time.time()
 
-from videox_fun.pipelines import WanFunControlPipeline
-from videox_fun.utils.lora_utils import merge_lora, unmerge_lora
+from videox_fun.pipeline import WanFunControlPipeline
 
 pipe = WanFunControlPipeline.from_pretrained(
     MODEL_ID,
