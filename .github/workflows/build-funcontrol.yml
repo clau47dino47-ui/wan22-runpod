@@ -6,6 +6,7 @@ on:
     paths:
       - 'server_funcontrol.py'
       - 'Dockerfile.funcontrol'
+      - 'wan_civitai.yaml'
   workflow_dispatch:
 
 jobs:
