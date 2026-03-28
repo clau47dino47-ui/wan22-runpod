@@ -59,6 +59,7 @@ config = OmegaConf.load(CONFIG_PATH)
 transformer = WanTransformer3DModel.from_pretrained(
     os.path.join(model_path, config["transformer_additional_kwargs"].get("transformer_subpath", "./")),
     torch_dtype=torch.bfloat16,
+    low_cpu_mem_usage=True,
     transformer_additional_kwargs=OmegaConf.to_container(config["transformer_additional_kwargs"]),
 )
 vae = AutoencoderKLWan.from_pretrained(
@@ -72,6 +73,7 @@ text_encoder = WanT5EncoderModel.from_pretrained(
     os.path.join(model_path, config["text_encoder_kwargs"].get("text_encoder_subpath", "text_encoder")),
     additional_kwargs=OmegaConf.to_container(config["text_encoder_kwargs"]),
     torch_dtype=torch.bfloat16,
+    low_cpu_mem_usage=True,
 )
 image_encoder = CLIPModel.from_pretrained(
     os.path.join(model_path, config["image_encoder_kwargs"].get("image_encoder_subpath", "image_encoder")),
