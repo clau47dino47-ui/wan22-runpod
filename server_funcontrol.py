@@ -57,22 +57,62 @@ config = OmegaConf.load(CONFIG_PATH)
 
 # Transformer INT8: ~11.5GB on GPU (23GB bfloat16 / 2) — fits in 24GB with room for activations
 # WanTransformer3DModel.from_pretrained is custom and doesn't support quantization_config.
-# Strategy: load on CPU (bf16), replace Linear→Linear8bitLt, then move to GPU.
+# We bypass it: init_empty_weights → replace_with_bnb_linear → load_model_dict_into_meta
+# with hf_quantizer so weights go CPU state_dict → GPU INT8 directly (never bfloat16 on GPU).
+
+def _load_transformer_int8(model_path, transformer_additional_kwargs, torch_dtype, bnb_config):
+    import json, glob, accelerate
+    from diffusers.models.model_loading_utils import load_model_dict_into_meta
+    from diffusers.quantizers.bitsandbytes import BnB8BitDiffusersQuantizer
+    from diffusers.quantizers.bitsandbytes.utils import replace_with_bnb_linear
+    from safetensors.torch import load_file
+
+    config_file = os.path.join(model_path, "config.json")
+    with open(config_file) as f:
+        cfg = json.load(f)
+
+    kwargs = dict(transformer_additional_kwargs)
+    if "dict_mapping" in kwargs:
+        for k in kwargs["dict_mapping"]:
+            kwargs[kwargs["dict_mapping"][k]] = cfg[k]
+
+    with accelerate.init_empty_weights():
+        model = WanTransformer3DModel.from_config(cfg, **kwargs)
+
+    hf_quantizer = BnB8BitDiffusersQuantizer(bnb_config, quantization_kwargs={})
+    replace_with_bnb_linear(model, quantization_config=bnb_config)
+
+    safetensors_files = glob.glob(os.path.join(model_path, "*.safetensors"))
+    state_dict = {}
+    for f in safetensors_files:
+        state_dict.update(load_file(f))
+
+    model_sd = model.state_dict()
+    filtered = {k: v for k, v in state_dict.items()
+                if k in model_sd and model_sd[k].size() == v.size()}
+
+    load_model_dict_into_meta(
+        model, filtered,
+        device="cuda:0",
+        dtype=torch_dtype,
+        model_name_or_path=model_path,
+        hf_quantizer=hf_quantizer,
+    )
+    return model
+
 _bnb_config = BitsAndBytesConfig(
     load_in_8bit=True,
     llm_int8_threshold=6.0,
     llm_int8_enable_fp32_cpu_offload=False,
     llm_int8_has_fp16_weight=False,
 )
-transformer = WanTransformer3DModel.from_pretrained(
-    os.path.join(model_path, config["transformer_additional_kwargs"].get("transformer_subpath", "./")),
-    torch_dtype=torch.bfloat16,
-    low_cpu_mem_usage=True,
-    transformer_additional_kwargs=OmegaConf.to_container(config["transformer_additional_kwargs"]),
+transformer_path = os.path.join(model_path, config["transformer_additional_kwargs"].get("transformer_subpath", "./"))
+transformer = _load_transformer_int8(
+    transformer_path,
+    OmegaConf.to_container(config["transformer_additional_kwargs"]),
+    torch.bfloat16,
+    _bnb_config,
 )
-from diffusers.quantizers.bitsandbytes.utils import replace_with_bnb_linear
-transformer = replace_with_bnb_linear(transformer, quantization_config=_bnb_config)
-transformer = transformer.to("cuda")
 vae = AutoencoderKLWan.from_pretrained(
     os.path.join(model_path, config["vae_kwargs"].get("vae_subpath", "vae")),
     additional_kwargs=OmegaConf.to_container(config["vae_kwargs"]),
