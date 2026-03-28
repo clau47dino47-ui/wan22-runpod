@@ -56,11 +56,18 @@ log.info(f"Model downloaded to {model_path} in {time.time()-t0:.1f}s")
 config = OmegaConf.load(CONFIG_PATH)
 
 # Transformer INT8: ~11.5GB on GPU (23GB bfloat16 / 2) — fits in 24GB with room for activations
-_bnb_config = BitsAndBytesConfig(load_in_8bit=True)
+_bnb_config = BitsAndBytesConfig(
+    load_in_8bit=True,
+    llm_int8_threshold=6.0,
+    llm_int8_enable_fp32_cpu_offload=False,  # keep fully on GPU
+    llm_int8_has_fp16_weight=False,
+)
 transformer = WanTransformer3DModel.from_pretrained(
     os.path.join(model_path, config["transformer_additional_kwargs"].get("transformer_subpath", "./")),
     quantization_config=_bnb_config,
     device_map="cuda:0",
+    torch_dtype=torch.bfloat16,
+    low_cpu_mem_usage=True,
     transformer_additional_kwargs=OmegaConf.to_container(config["transformer_additional_kwargs"]),
 )
 vae = AutoencoderKLWan.from_pretrained(
