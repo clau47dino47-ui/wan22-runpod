@@ -68,7 +68,7 @@ COPY --from=builder /usr/local/bin /usr/local/bin
 
 WORKDIR /app
 COPY server_funcontrol.py .
-COPY --from=builder /videox_fun_repo/config/wan2.1/wan_civitai.yaml .
+COPY wan_civitai.yaml .
 
 EXPOSE 3452
 CMD ["python3.10", "-m", "uvicorn", "server_funcontrol:app", "--host", "0.0.0.0", "--port", "3452"]
