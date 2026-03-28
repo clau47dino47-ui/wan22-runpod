@@ -135,9 +135,19 @@ image_encoder = CLIPModel.from_pretrained(
 sched_kwargs = OmegaConf.to_container(config["scheduler_kwargs"])
 scheduler = FlowDPMSolverMultistepScheduler(**_filter_kwargs(FlowDPMSolverMultistepScheduler, sched_kwargs))
 
+class _TextEncoderStub:
+    """Stub that satisfies pipeline dtype/attribute checks without loading a real text encoder.
+    __getattr__ returns None for any unknown attribute; __call__ returns None if ever invoked."""
+    def __init__(self, dtype=torch.bfloat16):
+        self.dtype = dtype
+    def __call__(self, *args, **kwargs):
+        return None
+    def __getattr__(self, name):
+        return None
+
 pipe = WanFunControlPipeline(
     vae=vae,
-    text_encoder=None,
+    text_encoder=_TextEncoderStub(dtype=torch.bfloat16),
     tokenizer=None,
     transformer=transformer,
     scheduler=scheduler,
