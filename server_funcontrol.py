@@ -338,7 +338,12 @@ def process_payload(payload: dict) -> dict:
 
     # 7. Export e upload
     from diffusers.utils import export_to_video
-    all_frames = output.videos[0]
+    import numpy as np
+    # output.videos[0] is a torch.Tensor [C, F, H, W] float32 in [0,1]
+    # export_to_video needs a list of numpy [H, W, C] uint8 frames
+    raw = output.videos[0]  # [C, F, H, W]
+    raw = raw.permute(1, 2, 3, 0).float().cpu().numpy()  # [F, H, W, C]
+    all_frames = (raw * 255).clip(0, 255).astype(np.uint8)
 
     with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
         tmp_path = tmp.name
