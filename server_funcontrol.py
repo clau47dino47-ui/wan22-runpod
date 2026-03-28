@@ -205,8 +205,8 @@ def process_payload(payload: dict) -> dict:
                   width, height, num_frames, steps, guidance_scale
     Returns: dict con result_url e pose_video_url
     """
-    width  = max(round(int(payload.get("width",  832)) / 32) * 32, 64)
-    height = max(round(int(payload.get("height", 480)) / 32) * 32, 64)
+    width  = max(round(min(int(payload.get("width",  640)), 640) / 32) * 32, 64)
+    height = max(round(min(int(payload.get("height", 384)), 384) / 32) * 32, 64)
 
     # 1. Carica immagine sorgente
     resp = requests.get(payload["image_url"], timeout=30)
