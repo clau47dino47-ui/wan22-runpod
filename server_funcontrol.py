@@ -338,7 +338,7 @@ def process_payload(payload: dict) -> dict:
 
     # 7. Export e upload
     from diffusers.utils import export_to_video
-    all_frames = output.frames[0]
+    all_frames = output.videos[0]
 
     with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
         tmp_path = tmp.name
