@@ -260,6 +260,7 @@ def process_payload(payload: dict) -> dict:
     num_frames = min(int(payload.get("num_frames", control_video_tensor.shape[2])), 49)
     control_video_tensor = control_video_tensor[:, :, :num_frames, :, :]  # clip to num_frames
     log.info(f"Generating video: {num_frames} frames, {width}x{height}")
+    torch.cuda.empty_cache()
     with torch.inference_mode():
         output = pipe(
             prompt=payload["prompt"],
