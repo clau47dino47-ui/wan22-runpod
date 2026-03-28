@@ -61,43 +61,55 @@ config = OmegaConf.load(CONFIG_PATH)
 # with hf_quantizer so weights go CPU state_dict → GPU INT8 directly (never bfloat16 on GPU).
 
 def _load_transformer_int8(model_path, transformer_additional_kwargs, torch_dtype, bnb_config):
-    import json, glob, accelerate
-    from diffusers.models.model_loading_utils import load_model_dict_into_meta
-    from diffusers.quantizers.bitsandbytes import BnB8BitDiffusersQuantizer
-    from diffusers.quantizers.bitsandbytes.utils import replace_with_bnb_linear
-    from safetensors.torch import load_file
+    """Load transformer INT8 directly to GPU — one tensor at a time, zero bfloat16 on CPU.
 
-    config_file = os.path.join(model_path, "config.json")
-    with open(config_file) as f:
+    Flow: init_empty_weights → replace_with_bnb_linear → per-tensor:
+      safetensors mmap → contiguous CPU tensor →
+      set_module_tensor_to_device (handles 8-bit CB/SCB internally) → GPU
+    """
+    import json, glob, accelerate
+    from accelerate.utils import set_module_tensor_to_device
+    from safetensors import safe_open
+    from diffusers.quantizers.bitsandbytes.utils import replace_with_bnb_linear
+
+    with open(os.path.join(model_path, "config.json")) as f:
         cfg = json.load(f)
 
     kwargs = dict(transformer_additional_kwargs)
     if "dict_mapping" in kwargs:
-        for k in kwargs["dict_mapping"]:
+        for k in list(kwargs["dict_mapping"].keys()):
             kwargs[kwargs["dict_mapping"][k]] = cfg[k]
 
     with accelerate.init_empty_weights():
         model = WanTransformer3DModel.from_config(cfg, **kwargs)
 
-    hf_quantizer = BnB8BitDiffusersQuantizer(bnb_config, quantization_kwargs={})
-    replace_with_bnb_linear(model, quantization_config=bnb_config)
+    replace_with_bnb_linear(model, modules_to_not_convert=[], quantization_config=bnb_config)
 
-    safetensors_files = glob.glob(os.path.join(model_path, "*.safetensors"))
-    state_dict = {}
-    for f in safetensors_files:
-        state_dict.update(load_file(f))
+    # Build index: param_name → safetensors file path
+    safetensors_files = sorted(glob.glob(os.path.join(model_path, "*.safetensors")))
+    param_index = {}
+    for fpath in safetensors_files:
+        with safe_open(fpath, framework="pt") as f:
+            for key in f.keys():
+                param_index[key] = fpath
 
-    model_sd = model.state_dict()
-    filtered = {k: v for k, v in state_dict.items()
-                if k in model_sd and model_sd[k].size() == v.size()}
+    # Load one tensor at a time via set_module_tensor_to_device:
+    # accelerate has specific logic for bnb 8-bit modules (set_module_8bit_tensor_to_device)
+    # that correctly handles CB/SCB without double-quantization risk.
+    for param_name, _ in model.named_parameters():
+        if param_name in param_index:
+            with safe_open(param_index[param_name], framework="pt") as f:
+                tensor = f.get_tensor(param_name).contiguous()
+            set_module_tensor_to_device(model, param_name, "cuda:0", value=tensor)
+            del tensor
 
-    load_model_dict_into_meta(
-        model, filtered,
-        device="cuda:0",
-        dtype=torch_dtype,
-        model_name_or_path=model_path,
-        hf_quantizer=hf_quantizer,
-    )
+    for buf_name, _ in model.named_buffers():
+        if buf_name in param_index:
+            with safe_open(param_index[buf_name], framework="pt") as f:
+                tensor = f.get_tensor(buf_name).contiguous()
+            set_module_tensor_to_device(model, buf_name, "cuda:0", value=tensor)
+            del tensor
+
     return model
 
 _bnb_config = BitsAndBytesConfig(
