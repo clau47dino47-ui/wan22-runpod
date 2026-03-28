@@ -258,6 +258,7 @@ def process_payload(payload: dict) -> dict:
     ))
 
     num_frames = int(payload.get("num_frames", control_video_tensor.shape[2]))
+    control_video_tensor = control_video_tensor[:, :, :num_frames, :, :]  # clip to num_frames
     log.info(f"Generating video: {num_frames} frames, {width}x{height}")
     with torch.inference_mode():
         output = pipe(
