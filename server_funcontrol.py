@@ -92,7 +92,7 @@ log.info(f"Model ready in {time.time()-t0:.1f}s")
 
 # ── DWPose (rtmlib — no mmcv/mmpose/mmdet required) ──────────────────────────
 from rtmlib import Wholebody, draw_skeleton as rtmlib_draw_skeleton
-_wholebody = Wholebody(to_openpose=True, backend="onnxruntime", device="cpu")
+_wholebody = Wholebody(to_openpose=True, backend="onnxruntime", device="cuda")
 log.info("DWPose detector (rtmlib Wholebody) loaded")
 
 # ── S3 ────────────────────────────────────────────────────────────────────────
