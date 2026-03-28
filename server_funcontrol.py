@@ -338,7 +338,6 @@ def process_payload(payload: dict) -> dict:
 
     # 7. Export e upload
     from diffusers.utils import export_to_video
-    import numpy as np
     # output.videos[0] is a torch.Tensor [C, F, H, W] float32 in [0,1]
     # export_to_video needs a list of numpy [H, W, C] uint8 frames
     raw = output.videos[0]  # [C, F, H, W]
