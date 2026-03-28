@@ -143,7 +143,7 @@ class _TextEncoderStub:
     def __call__(self, *args, **kwargs):
         return None
     def __getattr__(self, name):
-        return None
+        return lambda *args, **kwargs: None
 
 pipe = WanFunControlPipeline(
     vae=vae,
