@@ -89,7 +89,7 @@ pipe = WanFunControlPipeline(
     scheduler=scheduler,
     clip_image_encoder=image_encoder,
 )
-pipe.enable_sequential_cpu_offload()
+pipe.enable_model_cpu_offload()
 log.info(f"Model ready in {time.time()-t0:.1f}s")
 
 # ── DWPose (rtmlib — no mmcv/mmpose/mmdet required) ──────────────────────────
@@ -257,7 +257,7 @@ def process_payload(payload: dict) -> dict:
         "手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走"
     ))
 
-    num_frames = int(payload.get("num_frames", control_video_tensor.shape[2]))
+    num_frames = min(int(payload.get("num_frames", control_video_tensor.shape[2])), 49)
     control_video_tensor = control_video_tensor[:, :, :num_frames, :, :]  # clip to num_frames
     log.info(f"Generating video: {num_frames} frames, {width}x{height}")
     with torch.inference_mode():
