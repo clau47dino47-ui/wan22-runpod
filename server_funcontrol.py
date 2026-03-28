@@ -59,14 +59,14 @@ transformer = WanTransformer3DModel.from_pretrained(
     torch_dtype=torch.bfloat16,
     low_cpu_mem_usage=True,
     transformer_additional_kwargs=OmegaConf.to_container(config["transformer_additional_kwargs"]),
-)
+).to("cuda")
 vae = AutoencoderKLWan.from_pretrained(
     os.path.join(model_path, config["vae_kwargs"].get("vae_subpath", "vae")),
     additional_kwargs=OmegaConf.to_container(config["vae_kwargs"]),
-).to(torch.bfloat16)
+).to(dtype=torch.bfloat16, device="cuda")
 image_encoder = CLIPModel.from_pretrained(
     os.path.join(model_path, config["image_encoder_kwargs"].get("image_encoder_subpath", "image_encoder")),
-).to(torch.bfloat16)
+).to(dtype=torch.bfloat16, device="cuda")
 sched_kwargs = OmegaConf.to_container(config["scheduler_kwargs"])
 scheduler = FlowDPMSolverMultistepScheduler(**_filter_kwargs(FlowDPMSolverMultistepScheduler, sched_kwargs))
 
@@ -82,8 +82,7 @@ pipe = WanFunControlPipeline(
 # Zero embeddings — text encoder not used, shape: (1, text_length, dim)
 _TEXT_SEQ_LEN = config["text_encoder_kwargs"].get("text_length", 512)
 _TEXT_DIM     = config["text_encoder_kwargs"].get("dim", 4096)
-_zero_embeds  = torch.zeros(1, _TEXT_SEQ_LEN, _TEXT_DIM, dtype=torch.bfloat16)
-pipe.enable_model_cpu_offload()
+_zero_embeds  = torch.zeros(1, _TEXT_SEQ_LEN, _TEXT_DIM, dtype=torch.bfloat16, device="cuda")
 log.info(f"Model ready in {time.time()-t0:.1f}s")
 
 # ── DWPose (rtmlib — no mmcv/mmpose/mmdet required) ──────────────────────────
