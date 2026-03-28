@@ -36,6 +36,7 @@ t0 = time.time()
 import inspect
 from huggingface_hub import snapshot_download
 from omegaconf import OmegaConf
+from transformers import BitsAndBytesConfig
 from videox_fun.pipeline.pipeline_wan_fun_control import WanFunControlPipeline
 from videox_fun.models.wan_transformer3d import WanTransformer3DModel
 from videox_fun.models.wan_vae import AutoencoderKLWan
@@ -54,12 +55,14 @@ model_path = snapshot_download(MODEL_ID, local_dir=os.path.join(CACHE_DIR, "mode
 log.info(f"Model downloaded to {model_path} in {time.time()-t0:.1f}s")
 config = OmegaConf.load(CONFIG_PATH)
 
+# Transformer INT8: ~11.5GB on GPU (23GB bfloat16 / 2) — fits in 24GB with room for activations
+_bnb_config = BitsAndBytesConfig(load_in_8bit=True)
 transformer = WanTransformer3DModel.from_pretrained(
     os.path.join(model_path, config["transformer_additional_kwargs"].get("transformer_subpath", "./")),
-    torch_dtype=torch.bfloat16,
-    low_cpu_mem_usage=True,
+    quantization_config=_bnb_config,
+    device_map="cuda:0",
     transformer_additional_kwargs=OmegaConf.to_container(config["transformer_additional_kwargs"]),
-).to("cuda")
+)
 vae = AutoencoderKLWan.from_pretrained(
     os.path.join(model_path, config["vae_kwargs"].get("vae_subpath", "vae")),
     additional_kwargs=OmegaConf.to_container(config["vae_kwargs"]),
@@ -232,8 +235,8 @@ def process_payload(payload: dict) -> dict:
 
     # 5. Converte pose frames in tensor (b,c,f,h,w) in [0,1] per la pipeline
     import torchvision.transforms.functional as TF
-    _dtype = transformer.dtype   # bfloat16
-    _device = transformer.device  # cuda
+    _dtype = torch.bfloat16
+    _device = "cuda"
     frames_rgb = [cv2.cvtColor(f, cv2.COLOR_BGR2RGB) for f in pose_frames]
     control_video_tensor = torch.stack(
         [TF.to_tensor(Image.fromarray(f)) for f in frames_rgb]
