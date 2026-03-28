@@ -36,11 +36,9 @@ t0 = time.time()
 import inspect
 from huggingface_hub import snapshot_download
 from omegaconf import OmegaConf
-from transformers import AutoTokenizer as HFAutoTokenizer
 from videox_fun.pipeline.pipeline_wan_fun_control import WanFunControlPipeline
 from videox_fun.models.wan_transformer3d import WanTransformer3DModel
 from videox_fun.models.wan_vae import AutoencoderKLWan
-from videox_fun.models.wan_text_encoder import WanT5EncoderModel
 from videox_fun.models.wan_image_encoder import CLIPModel
 from videox_fun.utils.fm_solvers import FlowDPMSolverMultistepScheduler
 
@@ -66,15 +64,6 @@ vae = AutoencoderKLWan.from_pretrained(
     os.path.join(model_path, config["vae_kwargs"].get("vae_subpath", "vae")),
     additional_kwargs=OmegaConf.to_container(config["vae_kwargs"]),
 ).to(torch.bfloat16)
-tokenizer = HFAutoTokenizer.from_pretrained(
-    config["text_encoder_kwargs"].get("tokenizer_subpath", "google/umt5-xxl"),
-)
-text_encoder = WanT5EncoderModel.from_pretrained(
-    os.path.join(model_path, config["text_encoder_kwargs"].get("text_encoder_subpath", "text_encoder")),
-    additional_kwargs=OmegaConf.to_container(config["text_encoder_kwargs"]),
-    torch_dtype=torch.bfloat16,
-    low_cpu_mem_usage=True,
-)
 image_encoder = CLIPModel.from_pretrained(
     os.path.join(model_path, config["image_encoder_kwargs"].get("image_encoder_subpath", "image_encoder")),
 ).to(torch.bfloat16)
@@ -83,12 +72,17 @@ scheduler = FlowDPMSolverMultistepScheduler(**_filter_kwargs(FlowDPMSolverMultis
 
 pipe = WanFunControlPipeline(
     vae=vae,
-    text_encoder=text_encoder,
-    tokenizer=tokenizer,
+    text_encoder=None,
+    tokenizer=None,
     transformer=transformer,
     scheduler=scheduler,
     clip_image_encoder=image_encoder,
 )
+
+# Zero embeddings — text encoder not used, shape: (1, text_length, dim)
+_TEXT_SEQ_LEN = config["text_encoder_kwargs"].get("text_length", 512)
+_TEXT_DIM     = config["text_encoder_kwargs"].get("dim", 4096)
+_zero_embeds  = torch.zeros(1, _TEXT_SEQ_LEN, _TEXT_DIM, dtype=torch.bfloat16)
 pipe.enable_model_cpu_offload()
 log.info(f"Model ready in {time.time()-t0:.1f}s")
 
@@ -250,21 +244,14 @@ def process_payload(payload: dict) -> dict:
     start_image_tensor = TF.to_tensor(source_image).unsqueeze(0).unsqueeze(2).to(dtype=_dtype, device=_device)  # (1,3,1,H,W)
 
     # 6. Generazione video
-    negative_prompt = payload.get("negative_prompt", (
-        "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，"
-        "整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，"
-        "画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，"
-        "手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走"
-    ))
-
     num_frames = min(int(payload.get("num_frames", control_video_tensor.shape[2])), 49)
     control_video_tensor = control_video_tensor[:, :, :num_frames, :, :]  # clip to num_frames
     log.info(f"Generating video: {num_frames} frames, {width}x{height}")
     torch.cuda.empty_cache()
     with torch.inference_mode():
         output = pipe(
-            prompt=payload["prompt"],
-            negative_prompt=negative_prompt,
+            prompt_embeds=_zero_embeds,
+            negative_prompt_embeds=_zero_embeds,
             start_image=start_image_tensor,
             clip_image=source_image,
             control_video=control_video_tensor,
