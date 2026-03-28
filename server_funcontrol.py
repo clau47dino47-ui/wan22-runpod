@@ -89,7 +89,7 @@ pipe = WanFunControlPipeline(
     scheduler=scheduler,
     clip_image_encoder=image_encoder,
 )
-pipe.enable_model_cpu_offload()
+pipe.enable_sequential_cpu_offload()
 log.info(f"Model ready in {time.time()-t0:.1f}s")
 
 # ── DWPose (rtmlib — no mmcv/mmpose/mmdet required) ──────────────────────────
